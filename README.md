@@ -1,8 +1,6 @@
 # Description
 
-Blah blah, read this: [How to make a jailbreak without a filesystem remount as r/w](https://github.com/jakeajames/rootlessJB/blob/master/writeup.pdf)
-
-- Powered by jelbrekLib
+FuckingEx JB by Widifirmaan
 
 ## Usage notes
 
