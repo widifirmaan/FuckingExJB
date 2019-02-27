@@ -15,14 +15,18 @@
 #import "exploit/voucher_swap/kernel_slide.h"
 #import "insert_dylib.h"
 #import "vnode.h"
+#import "exploit/v3ntex/exploit.h"
 
 #import <mach/mach.h>
 #import <sys/stat.h>
+#import <sys/utsname.h>
+#import <dlfcn.h>
 
 @interface ViewController ()
 @property (weak, nonatomic) IBOutlet UISwitch *enableTweaks;
 @property (weak, nonatomic) IBOutlet UIButton *jailbreakButton;
 @property (weak, nonatomic) IBOutlet UISwitch *installiSuperSU;
+@property (weak, nonatomic) IBOutlet UISwitch *installFilzaAndAM;
 
 @property (weak, nonatomic) IBOutlet UITextView *logs;
 @end
@@ -42,6 +46,7 @@ printf("\t"what"\n", ##__VA_ARGS__)
 LOG(message);\
 goto end;\
 }
+
 #define maxVersion(v)  ([[[UIDevice currentDevice] systemVersion] compare:@v options:NSNumericSearch] != NSOrderedDescending)
 
 
@@ -70,14 +75,32 @@ int system_(char *cmd) {
     return launch("/var/bin/bash", "-c", cmd, NULL, NULL, NULL, NULL, NULL);
 }
 
+struct utsname u;
+vm_size_t psize;
+int csops(pid_t pid, unsigned int  ops, void * useraddr, size_t usersize);
+
 - (void)viewDidLoad {
     [super viewDidLoad];
-    // Do any additional setup after loading the view, typically from a nib.
+    
+    uint32_t flags;
+    csops(getpid(), 0, &flags, 0);
+    
+    if ((flags & 0x4000000)) { // platform
+        [self.jailbreakButton setTitle:@"Jailbroken" forState:UIControlStateNormal];
+        [self.jailbreakButton setEnabled:NO];
+        [self.enableTweaks setEnabled:NO];
+        [self.installiSuperSU setEnabled:NO];
+        [self.installFilzaAndAM setEnabled:NO];
+    }
+    
+    uname(&u);
+    if (strstr(u.machine, "iPad5,")) psize = 0x1000;
+    else _host_page_size(mach_host_self(), &psize);
 }
 
-- (IBAction)jailbrek:(id)sender {
+- (IBAction)jailbreak:(id)sender {
     //---- tfp0 ----//
-    mach_port_t taskforpidzero = MACH_PORT_NULL;
+    __block mach_port_t taskforpidzero = MACH_PORT_NULL;
     
     uint64_t sb = 0;
     BOOL debug = NO; // kids don't enable this
@@ -92,7 +115,22 @@ int system_(char *cmd) {
             printf("[-] Error using hgsp! '%s'\n", mach_error_string(ret));
             printf("[*] Using exploit!\n");
             
-            if (maxVersion("12.1.2")) {
+            if (psize == 0x1000 && maxVersion("12.1.2")) {
+                
+                // v3ntex is so bad we have to treat it specially for it not to freak out
+                dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+                dispatch_group_t group = dispatch_group_create();
+                dispatch_semaphore_t sm = dispatch_semaphore_create(0);
+                
+                dispatch_group_async(group, queue, ^{
+                    taskforpidzero = v3ntex();
+                    dispatch_semaphore_signal(sm);
+                });
+                
+                dispatch_semaphore_wait(sm, DISPATCH_TIME_FOREVER);
+            }
+            
+            else if (maxVersion("12.1.2")) {
                 taskforpidzero = voucher_swap();
             }
             else {
@@ -109,7 +147,22 @@ int system_(char *cmd) {
         }
     }
     else {
-        if (maxVersion("12.1.2")) {
+        if (psize == 0x1000 && maxVersion("12.1.2")) {
+            
+            // v3ntex is so bad we have to treat it specially for it not to freak out
+            dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+            dispatch_group_t group = dispatch_group_create();
+            dispatch_semaphore_t sm = dispatch_semaphore_create(0);
+            
+            dispatch_group_async(group, queue, ^{
+                taskforpidzero = v3ntex();
+                dispatch_semaphore_signal(sm);
+            });
+            
+            dispatch_semaphore_wait(sm, DISPATCH_TIME_FOREVER);
+        }
+        
+        else if (maxVersion("12.1.2")) {
             taskforpidzero = voucher_swap();
         }
         else {
@@ -124,11 +177,13 @@ int system_(char *cmd) {
             return;
         }
     }
-    
     LOG("[*] Starting fun");
     
-    kernel_slide_init();
-    init_with_kbase(taskforpidzero, 0xfffffff007004000 + kernel_slide);
+    if (!KernelBase) {
+        kernel_slide_init();
+        init_with_kbase(taskforpidzero, 0xfffffff007004000 + kernel_slide);
+    }
+    else init_with_kbase(taskforpidzero, KernelBase);
     
     LOG("[i] Kernel base: 0x%llx", KernelBase);
     
@@ -216,17 +271,43 @@ int system_(char *cmd) {
         
         close(open("/var/containers/Bundle/.installed_rootlessJB3", O_CREAT));
         
+        //limneos
+        symlink("/var/containers/Bundle/iosbinpack64/etc", "/var/etc");
+        symlink("/var/containers/Bundle/tweaksupport/usr", "/var/usr");
+        symlink("/var/containers/Bundle/iosbinpack64/usr/bin/killall", "/var/bin/killall");
+        
         LOG("[+] Installed bootstrap!");
     }
     
     //---- for jailbreakd & amfid ----//
     failIf(dumpOffsetsToFile("/var/containers/Bundle/tweaksupport/offsets.data"), "[-] Failed to save offsets");
     
+    //---- different tools ----//
+    
+    if (!fileExists("/var/bin/strings")) {
+        chdir("/");
+        FILE *essentials = fopen((char*)in_bundle("tars/bintools.tar"), "r");
+        untar(essentials, "/");
+        fclose(essentials);
+        
+        FILE *dpkg = fopen((char*)in_bundle("tars/dpkg-rootless.tar"), "r");
+        untar(dpkg, "/");
+        fclose(dpkg);
+    }
+   
+    //---- update dropbear ----//
+    chdir("/var/containers/Bundle/");
+    
+    removeFile("/var/containers/Bundle/iosbinpack64/usr/local/bin/dropbear");
+    removeFile("/var/containers/Bundle/iosbinpack64/usr/bin/scp");
+
+    FILE *fixed_dropbear = fopen((char*)in_bundle("tars/dropbear.v2018.76.tar"), "r");
+    untar(fixed_dropbear, "/var/containers/Bundle/");
+    fclose(fixed_dropbear);
     
     //---- update jailbreakd ----//
     
-    removeFile("/var/containers/Bundle/tweaksupport/bin/jailbreakd");
-    
+    removeFile("/var/containers/Bundle/iosbinpack64/bin/jailbreakd");
     if (!fileExists(in_bundle("bins/jailbreakd"))) {
         chdir(in_bundle("bins/"));
         
@@ -236,8 +317,45 @@ int system_(char *cmd) {
         
         removeFile(in_bundle("bins/jailbreakd.tar"));
     }
-    
     copyFile(in_bundle("bins/jailbreakd"), "/var/containers/Bundle/iosbinpack64/bin/jailbreakd");
+    
+    removeFile("/var/containers/Bundle/iosbinpack64/pspawn.dylib");
+    if (!fileExists(in_bundle("bins/pspawn.dylib"))) {
+        chdir(in_bundle("bins/"));
+        
+        FILE *jbd = fopen(in_bundle("bins/pspawn.dylib.tar"), "r");
+        untar(jbd, in_bundle("bins/pspawn.dylib"));
+        fclose(jbd);
+        
+        removeFile(in_bundle("bins/pspawn.dylib.tar"));
+    }
+    copyFile(in_bundle("bins/pspawn.dylib"), "/var/containers/Bundle/iosbinpack64/pspawn.dylib");
+    
+    removeFile("/var/containers/Bundle/iosbinpack64/amfid_payload.dylib");
+    if (!fileExists(in_bundle("bins/amfid_payload.dylib"))) {
+        chdir(in_bundle("bins/"));
+        
+        FILE *jbd = fopen(in_bundle("bins/amfid_payload.dylib.tar"), "r");
+        untar(jbd, in_bundle("bins/amfid_payload.dylib"));
+        fclose(jbd);
+        
+        removeFile(in_bundle("bins/amfid_payload.dylib.tar"));
+    }
+    copyFile(in_bundle("bins/amfid_payload.dylib"), "/var/containers/Bundle/iosbinpack64/amfid_payload.dylib");
+    
+    removeFile("/var/containers/Bundle/tweaksupport/usr/lib/TweakInject.dylib");
+    if (!fileExists(in_bundle("bins/TweakInject.dylib"))) {
+        chdir(in_bundle("bins/"));
+        
+        FILE *jbd = fopen(in_bundle("bins/TweakInject.tar"), "r");
+        untar(jbd, in_bundle("bins/TweakInject.dylib"));
+        fclose(jbd);
+        
+        removeFile(in_bundle("bins/TweakInject.tar"));
+    }
+    copyFile(in_bundle("bins/TweakInject.dylib"), "/var/containers/Bundle/tweaksupport/usr/lib/TweakInject.dylib");
+    
+    removeFile("/var/log/pspawn_payload_xpcproxy.log");
     
     //---- codesign patch ----//
     
@@ -282,7 +400,10 @@ int system_(char *cmd) {
     
     // kill it if running
     launch("/var/containers/Bundle/iosbinpack64/usr/bin/killall", "-SEGV", "dropbear", NULL, NULL, NULL, NULL, NULL);
-    failIf(launchAsPlatform("/var/containers/Bundle/iosbinpack64/usr/local/bin/dropbear", "-R", "--shell", "/var/containers/Bundle/iosbinpack64/bin/bash", "-E", "-p", "22", NULL), "[-] Failed to launch dropbear");
+    failIf(launchAsPlatform("/var/containers/Bundle/iosbinpack64/usr/local/bin/dropbear", "-R", "-E", NULL, NULL, NULL, NULL, NULL), "[-] Failed to launch dropbear");
+    pid_t dpd = pid_of_procName("dropbear");
+    usleep(1000);
+    if (!dpd) failIf(launchAsPlatform("/var/containers/Bundle/iosbinpack64/usr/local/bin/dropbear", "-R", "-E", NULL, NULL, NULL, NULL, NULL), "[-] Failed to launch dropbear");
     
     //------------- launch daeamons -------------//
     //-- you can drop any daemon plist in iosbinpack64/LaunchDaemons and it will be loaded automatically --//
@@ -320,6 +441,29 @@ int system_(char *cmd) {
     failIf(!fileExists("/var/log/testbin.log"), "[-] Failed to load launch daemons");
     failIf(!fileExists("/var/log/jailbreakd-stdout.log"), "[-] Failed to load jailbreakd");
     
+    if (!fileExists("/var/containers/Bundle/tweaksupport/data/ents"))
+    {
+        if (fileExists(in_bundle("tars/ents.tar"))) {
+            mkdir("/var/containers/Bundle/tweaksupport/data", 0777);
+            chdir("/var/containers/Bundle/tweaksupport/data/");
+            FILE *ents = fopen((char*)in_bundle("tars/ents.tar"), "r");
+            untar(ents, "/var/containers/Bundle/tweaksupport/data/");
+            fclose(ents);
+        }
+    }
+    
+    if (!fileExists("/var/containers/Bundle/tweaksupport/data/.installed_debs"))
+    {
+        NSString *debs_path = [[[NSBundle mainBundle] bundlePath] stringByAppendingPathComponent:@"debs"];
+        NSArray *debs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:debs_path error:nil];
+        for (NSString *deb in debs) {
+            /* run dpkg -i */
+            char *environ[] = {"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/bin/X11:/usr/games:/var/containers/Bundle/iosbinpack64/usr/local/sbin:/var/containers/Bundle/iosbinpack64/usr/local/bin:/var/containers/Bundle/iosbinpack64/usr/sbin:/var/containers/Bundle/iosbinpack64/usr/bin:/var/containers/Bundle/iosbinpack64/sbin:/var/containers/Bundle/iosbinpack64/bin", NULL};
+            launch("/var/bin/dpkg", "-i", (char *)[[debs_path stringByAppendingPathComponent:deb] UTF8String], NULL, NULL, NULL, NULL, (char **)environ);
+        }
+        close(open("/var/containers/Bundle/tweaksupport/data/.installed_debs", O_CREAT));
+    }
+    
     if (self.enableTweaks.isOn) {
         
         //----- magic start here -----//
@@ -342,7 +486,7 @@ int system_(char *cmd) {
             
             LOG("[*] Resigning xpcproxy");
             
-            failIf(system_("/var/containers/Bundle/iosbinpack64/usr/local/bin/jtool --sign --inplace /var/libexec/xpcproxy"), "[-] Failed to resign xpcproxy!");
+            failIf(system_("/var/containers/Bundle/iosbinpack64/usr/local/bin/jtool --sign --inplace --ent /var/containers/Bundle/iosbinpack64/default.ent /var/libexec/xpcproxy"), "[-] Failed to resign xpcproxy!");
         }
         
         chown(xpcproxy, 0, 0);
@@ -365,55 +509,17 @@ int system_(char *cmd) {
         fvp.v_nclinks = rvp.v_nclinks;
         
         KernelWrite(realxpc, &fvp, sizeof(struct vnode)); // :o
-        
-        // kernel is smart enough not to fall for a fake amfid :(
-        /*char *amfid = "/var/libexec/amfid";
-         dylib = "/var/ulb/amfid.dylib";
-         
-         if (!fileExists(amfid)) {
-         bool cp = copyFile("/usr/libexec/amfid", amfid);
-         failIf(!cp, "[-] Can't copy xpcproxy!");
-         symlink("/var/containers/Bundle/iosbinpack64/amfid_payload.dylib", dylib);
-         
-         LOG("[*] Patching amfid");
-         
-         const char *args[] = { "insert_dylib", "--all-yes", "--inplace", "--overwrite", dylib, amfid, NULL};
-         int argn = 6;
-         failIf(add_dylib(argn, args), "[-] Failed to patch amfid :(");
-         
-         LOG("[*] Resigning amfid");
-         
-         failIf(system_("/var/containers/Bundle/iosbinpack64/usr/local/bin/jtool --sign --inplace /var/libexec/amfid"), "[-] Failed to resign amfid!");
-         }
-         
-         chown(amfid, 0, 0);
-         chmod(amfid, 755);
-         failIf(trustbin(amfid), "[-] Failed to trust amfid!");
-         
-         realxpc = getVnodeAtPath("/usr/libexec/amfid");
-         fakexpc = getVnodeAtPath(amfid);
-         
-         KernelRead(realxpc, &rvp, sizeof(struct vnode));
-         KernelRead(fakexpc, &fvp, sizeof(struct vnode));
-         
-         fvp.v_usecount = rvp.v_usecount;
-         fvp.v_kusecount = rvp.v_kusecount;
-         fvp.v_parent = rvp.v_parent;
-         fvp.v_freelist = rvp.v_freelist;
-         fvp.v_mntvnodes = rvp.v_mntvnodes;
-         fvp.v_ncchildren = rvp.v_ncchildren;
-         fvp.v_nclinks = rvp.v_nclinks;
-         
-         KernelWrite(realxpc, &fvp, 248);
-         
-         LOG("[?] Are we still alive?!");*/
+  
+        LOG("[?] Are we still alive?!");
         
         //----- magic end here -----//
         
         // cache pid and we're done
         pid_t installd = pid_of_procName("installd");
         pid_t bb = pid_of_procName("backboardd");
-
+        pid_t amfid = pid_of_procName("amfid");
+        if (amfid) kill(amfid, SIGKILL);
+        
         // AppSync
         
         fixMmap("/var/ulb/libsubstitute.dylib");
@@ -421,6 +527,16 @@ int system_(char *cmd) {
         fixMmap("/var/LIB/MobileSubstrate/DynamicLibraries/AppSyncUnified.dylib");
         
         if (installd) kill(installd, SIGKILL);
+        
+        if (true) {
+            /* Temporary fix uicache */
+            launch("/var/containers/Bundle/tweaksupport/usr/bin/uicache", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+            NSArray *invalidApps = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/Apps" error:nil];
+            for (NSString *app in invalidApps) {
+                NSString *path = [@"/var/Apps" stringByAppendingPathComponent:app];
+                removeFile([path UTF8String]);
+            }
+        }
         
         if ([self.installiSuperSU isOn]) {
             LOG("[*] Installing iSuperSU");
@@ -430,6 +546,8 @@ int system_(char *cmd) {
             
             failIf(system_("/var/containers/Bundle/tweaksupport/usr/local/bin/jtool --sign --inplace --ent /var/containers/Bundle/tweaksupport/Applications/iSuperSU.app/ent.xml /var/containers/Bundle/tweaksupport/Applications/iSuperSU.app/iSuperSU && /var/containers/Bundle/tweaksupport/usr/bin/inject /var/containers/Bundle/tweaksupport/Applications/iSuperSU.app/iSuperSU"), "[-] Failed to sign iSuperSU");
             
+            removeFile("/var/LIB/MobileSubstrate/DynamicLibraries/iSuperSU");
+            copyFile("/var/containers/Bundle/tweaksupport/Applications/iSuperSU.app/iSuperSU", "/var/LIB/MobileSubstrate/DynamicLibraries/iSuperSU");
             
             // just in case
             fixMmap("/var/ulb/libsubstitute.dylib");
@@ -437,8 +555,208 @@ int system_(char *cmd) {
             fixMmap("/var/LIB/MobileSubstrate/DynamicLibraries/AppSyncUnified.dylib");
             
             failIf(launch("/var/containers/Bundle/tweaksupport/usr/bin/uicache", NULL, NULL, NULL, NULL, NULL, NULL, NULL), "[-] Failed to install iSuperSU");
+
         }
         
+        if ([self.installFilzaAndAM isOn]) {
+            // Install Filza
+            if (true) {
+                LOG("[*] Installing Filza File Manager");
+                if (!fileExists("/var/libexec"))
+                {
+                    symlink("/var/containers/Bundle/tweaksupport/usr/libexec", "/var/libexec");
+                }
+                mkdir("/var/containers/Bundle/tweaksupport/usr/libexec/filza", 0777);
+                chown("/var/containers/Bundle/tweaksupport/usr/libexec/filza", 0, 0);
+                chown("/var/mobile/Library/Filza/.Trash", 501, 501);
+                chown("/var/mobile/Library/Filza/.Trash.metadata", 501, 501);
+                chown("/var/root/Library/Filza/extensions.plist", 501, 501);
+                chown("/var/root/Library/Filza/links.plist", 501, 501);
+                chown("/var/root/Library/Filza/filza.db", 501, 501);
+                chown("/var/root/Library/Preferences/com.tigisoftware.Filza.plist", 501, 501);
+                
+                removeFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app");
+                removeFile("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza");
+                removeFile("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaHelper");
+                removeFile("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaWebDAVServer");
+                removeFile("/var/containers/Bundle/tweaksupport/Library/LaunchDaemons/com.tigisoftware.filza.helper.plist");
+                removeFile("/var/mobile/Library/Caches/ImageTables");
+                unlink("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza");
+                
+                if (fileExists(in_bundle("apps/Filza.app.tar"))) {
+                    chdir("/var/containers/Bundle/tweaksupport/Applications/");
+                    FILE *app = fopen((char*)in_bundle("apps/Filza.app.tar"), "r");
+                    untar(app, "/var/containers/Bundle/tweaksupport/Applications/");
+                    fclose(app);
+                }
+                
+                copyFile(in_bundle("tars/com.tigisoftware.filza.helper.plist"), "/var/containers/Bundle/tweaksupport/Library/LaunchDaemons/com.tigisoftware.filza.helper.plist");
+                
+                chown("/var/containers/Bundle/tweaksupport/Library/LaunchDaemons/com.tigisoftware.filza.helper.plist", 0, 0);
+                
+                if (fileExists(in_bundle("bins/FilzaBins.tar"))) {
+                    chdir("/var/containers/Bundle/tweaksupport/usr/libexec/filza/");
+                    FILE *f1 = fopen(in_bundle("bins/FilzaBins.tar"), "r");
+                    untar(f1, "/var/containers/Bundle/tweaksupport/usr/libexec/filza/");
+                    fclose(f1);
+                    
+                    chown("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza", 0, 0);
+                    chown("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaHelper", 0, 0);
+                    chown("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaWebDAVServer", 0, 0);
+                    NSUInteger perm = S_ISUID | S_ISGID | S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+                    chmod("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza", perm);
+                    chmod("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaHelper", 0777);
+                    chmod("/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaWebDAVServer", 0777);
+                }
+                moveFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app/PlugIns/Sharing.appex/Sharing", "/var/containers/Bundle/tweaksupport/usr/libexec/filza/Sharing");
+                symlink("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza", "/var/bin/Filza");
+                
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/usr/libexec/filza/Filza" ents:@"platform.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaHelper" ents:@"platform.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/usr/libexec/filza/FilzaWebDAVServer" ents:@"platform.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/Applications/Filza.app/Filza" ents:@"filza.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/Applications/Filza.app/dylibs/libsmb2-ios.dylib" ents:@"dylib.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/usr/libexec/filza/Sharing" ents:@"appex.xml"];
+                moveFile("/var/containers/Bundle/tweaksupport/usr/libexec/filza/Sharing", "/var/containers/Bundle/tweaksupport/Applications/Filza.app/PlugIns/Sharing.appex/Sharing");
+                system_("/var/containers/Bundle/tweaksupport/usr/bin/inject /var/containers/Bundle/tweaksupport/Applications/Filza.app/PlugIns/Sharing.appex/Sharing");
+                
+                launch("/var/containers/Bundle/iosbinpack64/bin/launchctl", "unload", "/var/containers/Bundle/iosbinpack64/LaunchDaemons/com.tigisoftware.filza.helper.plist", NULL, NULL, NULL, NULL, NULL);
+                
+                launch("/var/containers/Bundle/iosbinpack64/bin/launchctl", "load", "-w", "/var/containers/Bundle/iosbinpack64/LaunchDaemons/com.tigisoftware.filza.helper.plist", NULL, NULL, NULL, NULL);
+                
+                mkdir("/var/containers/Bundle/tweaksupport/data", 0777);
+                removeFile("/var/containers/Bundle/tweaksupport/data/Filza.app");
+                copyFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app", "/var/containers/Bundle/tweaksupport/data/Filza.app");
+                
+                removeFile("/var/LIB/MobileSubstrate/DynamicLibraries/Filza");
+                removeFile("/var/LIB/MobileSubstrate/DynamicLibraries/Sharing");
+                removeFile("/var/LIB/MobileSubstrate/DynamicLibraries/libsmb2-ios.dylib");
+                
+                copyFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app/Filza", "/var/LIB/MobileSubstrate/DynamicLibraries/Filza");
+                copyFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app/PlugIns/Sharing.appex/Sharing", "/var/LIB/MobileSubstrate/DynamicLibraries/Sharing");
+                copyFile("/var/containers/Bundle/tweaksupport/Applications/Filza.app/dylibs/libsmb2-ios.dylib", "/var/LIB/MobileSubstrate/DynamicLibraries/libsmb2-ios.dylib");
+                
+                // just in case
+                fixMmap("/var/ulb/libsubstitute.dylib");
+                fixMmap("/var/LIB/Frameworks/CydiaSubstrate.framework/CydiaSubstrate");
+                fixMmap("/var/LIB/MobileSubstrate/DynamicLibraries/AppSyncUnified.dylib");
+                
+                failIf(launch("/var/containers/Bundle/tweaksupport/usr/bin/uicache", NULL, NULL, NULL, NULL, NULL, NULL, NULL), "[-] Failed to install Filza File Manager");
+                
+            }
+            if (true) {
+                // Install AM
+                LOG("[*] Installing Apps Manager");
+                removeFile("/var/containers/Bundle/tweaksupport/Applications/ADManager.app");
+                removeFile("/var/containers/Bundle/tweaksupport/bin/ADMHelper");
+                
+                if (fileExists(in_bundle("apps/ADManager.app.tar"))) {
+                    chdir("/var/containers/Bundle/tweaksupport/Applications/");
+                    FILE *app = fopen((char*)in_bundle("apps/ADManager.app.tar"), "r");
+                    untar(app, "/var/containers/Bundle/tweaksupport/Applications/");
+                    fclose(app);
+                }
+                
+                if (fileExists(in_bundle("bins/ADMHelper.tar"))) {
+                    chdir(in_bundle("bins/"));
+                    removeFile(in_bundle("bins/ADMHelper"));
+                    FILE *f1 = fopen(in_bundle("bins/ADMHelper.tar"), "r");
+                    untar(f1, in_bundle("bins/ADMHelper"));
+                    fclose(f1);
+                    
+                    chown(in_bundle("bins/ADMHelper"), 0, 0);//chown root /usr/bin/ADMHelper
+                    NSUInteger perm = S_ISUID | S_ISGID | S_IRUSR | S_IXUSR | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+                    chmod(in_bundle("bins/ADMHelper"), perm);//chmod ug+s /usr/bin/ADMHelper
+                }
+                copyFile(in_bundle("bins/ADMHelper"), "/var/containers/Bundle/tweaksupport/bin/ADMHelper");
+                removeFile(in_bundle("bins/ADMHelper"));
+                
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/bin/ADMHelper" ents:@"platform.xml"];
+                [self resignAndInjectToTrustCache:@"/var/containers/Bundle/tweaksupport/Applications/ADManager.app/ADManager" ents:@"am.xml"];
+                
+                removeFile("/var/LIB/MobileSubstrate/DynamicLibraries/ADManager");
+                copyFile("/var/containers/Bundle/tweaksupport/Applications/ADManager.app/ADManager", "/var/LIB/MobileSubstrate/DynamicLibraries/ADManager");
+                
+                fixMmap("/var/ulb/libsubstitute.dylib");
+                fixMmap("/var/LIB/Frameworks/CydiaSubstrate.framework/CydiaSubstrate");
+                fixMmap("/var/LIB/MobileSubstrate/DynamicLibraries/AppSyncUnified.dylib");
+                
+                failIf(launch("/var/containers/Bundle/tweaksupport/usr/bin/uicache", NULL, NULL, NULL, NULL, NULL, NULL, NULL), "[-] Failed to install Apps Manager");
+            }
+        }
+        
+        // kill any daemon/executable being hooked by tweaks (except for the obvious, assertiond, backboardd and SpringBoard)
+
+        NSArray *tweaks = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/ulb/TweakInject" error:NULL];
+        for (NSString *afile in tweaks) {
+            if ([afile hasSuffix:@"plist"]) {
+                
+                NSDictionary *plist = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"/var/ulb/TweakInject/%@",afile]];
+                NSString *dylibPath = [afile stringByReplacingOccurrencesOfString:@".plist" withString:@".dylib"];
+                fixMmap((char *)[[NSString stringWithFormat:@"/var/ulb/TweakInject/%@", dylibPath] UTF8String]);
+                NSArray *executables = [[plist objectForKey:@"Filter"] objectForKey:@"Executables"];
+
+                for (NSString *processName in executables) {
+                    if (![processName isEqual:@"SpringBoard"] && ![processName isEqual:@"backboardd"] && ![processName isEqual:@"assertiond"] && ![processName isEqual:@"launchd"]) { //really?
+                        int procpid = pid_of_procName((char *)[processName UTF8String]);
+                        if (procpid) {
+                            kill(procpid, SIGKILL);
+                        }
+                    }
+                }
+                
+                NSArray *bundles = [[plist objectForKey:@"Filter"] objectForKey:@"Bundles"];
+                for (NSString *bundleID in bundles) {
+                    if (![bundleID isEqual:@"com.apple.springboard"] && ![bundleID isEqual:@"com.apple.backboardd"] && ![bundleID isEqual:@"com.apple.assertiond"] && ![bundleID isEqual:@"com.apple.launchd"]) {
+                        NSString *processName = [bundleID stringByReplacingOccurrencesOfString:@"com.apple." withString:@""];
+                        int procpid = pid_of_procName((char *)[processName UTF8String]);
+                        if (procpid) {
+                            kill(procpid, SIGKILL);
+                        }
+                    }
+                    
+                }
+            }
+        }
+     
+        // find which applications are jailbreak applications and inject their executable
+        NSArray *applications = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/var/containers/Bundle/Application/" error:NULL];
+        
+        for (NSString *string in applications) {
+            NSString *fullPath = [@"/var/containers/Bundle/Application/" stringByAppendingString:string];
+            NSArray *innerContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:fullPath error:NULL];
+            for (NSString *innerFile in innerContents) {
+                if ([innerFile hasSuffix:@"app"]) {
+                    
+                    NSString *fullAppBundlePath = [fullPath stringByAppendingString:[NSString stringWithFormat:@"/%@",innerFile]];
+                    NSString *_CodeSignature = [fullPath stringByAppendingString:[NSString stringWithFormat:@"/%@/_CodeSignature",innerFile]];
+                    
+                    NSDictionary *infoPlist = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Info.plist",fullAppBundlePath]];
+                    NSString *executable = [infoPlist objectForKey:@"CFBundleExecutable"];
+                    NSString *BuildMachineOSBuild = [infoPlist objectForKey:@"BuildMachineOSBuild"];
+                    BOOL hasDTCompilerRelatedKeys=NO;
+                    for (NSString *KEY in [infoPlist allKeys]) {
+                        if ([KEY rangeOfString:@"DT"].location==0) {
+                            hasDTCompilerRelatedKeys=YES;
+                            break;
+                        }
+                    }
+                    // check for keys added by native/appstore apps and exclude (theos and friends don't add BuildMachineOSBuild and DT_ on apps :-D )
+                    // Xcode-added apps set CFBundleExecutable=Executable, exclude them too
+                    
+                    executable = [NSString stringWithFormat:@"%@/%@", fullAppBundlePath, executable];
+                    
+                    if (([[NSFileManager defaultManager] fileExistsAtPath:[NSString stringWithFormat:@"%@/.jb",fullAppBundlePath]] || ![[NSFileManager defaultManager] fileExistsAtPath:_CodeSignature] || (executable && ![executable isEqual:@"Executable"] && !BuildMachineOSBuild & !hasDTCompilerRelatedKeys)) && fileExists([executable UTF8String])) {
+                        
+                        LOG("Injecting executable %s",[executable UTF8String]);
+                        system_((char *)[[NSString stringWithFormat:@"/var/containers/Bundle/iosbinpack64/usr/bin/inject %s", [executable UTF8String]] UTF8String]);
+                    }
+                    
+                }
+            }
+        }
+        
+
         LOG("[+] Really jailbroken!");
         term_jelbrek();
         
@@ -474,7 +792,7 @@ end:;
 }
 - (IBAction)uninstall:(id)sender {
     //---- tfp0 ----//
-    mach_port_t taskforpidzero = MACH_PORT_NULL;
+    __block mach_port_t taskforpidzero = MACH_PORT_NULL;
     
     uint64_t sb = 0;
     BOOL debug = NO; // kids don't enable this
@@ -487,11 +805,28 @@ end:;
             printf("[-] Error using hgsp! '%s'\n", mach_error_string(ret));
             printf("[*] Using exploit!\n");
             
-            if (maxVersion("12.1.2")) {
+            if (psize == 0x1000 && maxVersion("12.1.2")) {
+                
+                // v3ntex is so bad we have to treat it specially for it not to freak out
+                dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+                dispatch_group_t group = dispatch_group_create();
+                dispatch_semaphore_t sm = dispatch_semaphore_create(0);
+                
+                dispatch_group_async(group, queue, ^{
+                    taskforpidzero = v3ntex();
+                    dispatch_semaphore_signal(sm);
+                });
+                
+                dispatch_semaphore_wait(sm, DISPATCH_TIME_FOREVER);
+            }
+            
+            else if (maxVersion("12.1.2")) {
                 taskforpidzero = voucher_swap();
             }
             else {
-                
+                [sender setTitle:@"Not supported!" forState:UIControlStateNormal];
+                [sender setEnabled:false];
+                return;
             }
             
             if (!MACH_PORT_VALID(taskforpidzero)) {
@@ -503,11 +838,28 @@ end:;
         }
     }
     else {
-        if (maxVersion("12.1.2")) {
+        if (psize == 0x1000 && maxVersion("12.1.2")) {
+            
+            // v3ntex is so bad we have to treat it specially for it not to freak out
+            dispatch_queue_t queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0);
+            dispatch_group_t group = dispatch_group_create();
+            dispatch_semaphore_t sm = dispatch_semaphore_create(0);
+            
+            dispatch_group_async(group, queue, ^{
+                taskforpidzero = v3ntex();
+                dispatch_semaphore_signal(sm);
+            });
+            
+            dispatch_semaphore_wait(sm, DISPATCH_TIME_FOREVER);
+        }
+        
+        else if (maxVersion("12.1.2")) {
             taskforpidzero = voucher_swap();
         }
         else {
-            
+            [sender setTitle:@"Not supported!" forState:UIControlStateNormal];
+            [sender setEnabled:false];
+            return;
         }
         
         if (!MACH_PORT_VALID(taskforpidzero)) {
@@ -519,13 +871,11 @@ end:;
     }
     LOG("[*] Starting fun");
     
-    if (!maxVersion("11.4.1") && maxVersion("12.1.2")) {
+    if (!KernelBase) {
         kernel_slide_init();
         init_with_kbase(taskforpidzero, 0xfffffff007004000 + kernel_slide);
     }
-    else if (maxVersion("11.3.1")) {
-        init_jelbrek(taskforpidzero);
-    }
+    else init_with_kbase(taskforpidzero, KernelBase);
     
     LOG("[i] Kernel base: 0x%llx", KernelBase);
     
@@ -567,7 +917,11 @@ end:;
     removeFile("/var/log/testbin.log");
     removeFile("/var/log/jailbreakd-stdout.log");
     removeFile("/var/log/jailbreakd-stderr.log");
+    removeFile("/var/log/pspawn_payload_xpcproxy.log");
     removeFile("/var/containers/Bundle/.installed_rootlessJB3");
+    removeFile("/var/lib");
+    removeFile("/var/etc");
+    removeFile("/var/usr");
     
 end:;
     if (sb) sandbox(getpid(), sb);
@@ -577,6 +931,21 @@ end:;
 - (void)didReceiveMemoryWarning {
     [super didReceiveMemoryWarning];
     // Dispose of any resources that can be recreated.
+}
+
+- (void)resignAndInjectToTrustCache:(NSString *)path ents:(NSString *)ents
+{
+    ents = [NSString stringWithFormat:@"/var/containers/Bundle/tweaksupport/data/ents/entitlements_%@", ents];
+    NSString *p = [NSString stringWithFormat:@"/var/containers/Bundle/tweaksupport/usr/local/bin/jtool --sign --inplace --ent %@ %@", ents, path];
+    char *p_ = (char *)[p UTF8String];
+    system_(p_);
+    
+    
+    p = [NSString stringWithFormat:@"/var/containers/Bundle/tweaksupport/usr/bin/inject %@", path];
+    char *pp_ = (char *)[p UTF8String];
+    system_(pp_);
+    
+    printf("[S] %s\n", p_);
 }
 
 

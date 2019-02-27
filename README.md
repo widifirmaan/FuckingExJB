@@ -1,10 +1,24 @@
 # Description
 
-FuckingEx JB by Widifirmaan
+Blah blah, read this: [How to make a jailbreak without a filesystem remount as r/w](https://github.com/jakeajames/rootlessJB/blob/master/writeup.pdf)
+
+- Powered by jelbrekLib
+
+
+## Support
+
+- All A9-A11 devices
+- All A7-A8 devices
+
+## To be supported (sorted by priority)
+
+- A12 devices
+
+**DO NOT ASK FOR ETA**
 
 ## Usage notes
 
-- voucher_swap is used.
+- voucher_swap is used for 16K devices, and v3ntex for 4K ones.
 - Binaries are located in: /var/containers/Bundle/iosbinpack64
 - Launch daemons are located in /var/containers/Bundle/iosbinpack64/LaunchDaemons
 - /var/containers/Bundle/tweaksupport contains a filesystem simulation where tweaks and stuff get installed
@@ -29,11 +43,19 @@ All executables must have at least these two entitlements:
 
 # iOS 12
 - No amfid patch, either run "inject /path/to/executable_or_dylib" after adding stuff, or reboot and rejailbreak
-- Sandbox exceptions are broken. You can't tweak App Store apps + some system apps yet.
-- PreferenceLoader is broken, I suspect the preference bundles are some special kind of macho which amfid can understand but not the trustcache injector.
+- Sandbox exceptions are broken. You can't tweak App Store apps + some system apps yet. However, on the app's second run the backup sandbox patches will have triggered and you'll be able to read from the tweak directories. Tweaking will still not work on the second run unless you run jailbreakd's fixupdylib() on the target dylibs manually.
 - This is not dangerous and cannot screw you up but not likely to be unstable/buggy
-- Since sandbox exceptions are broken, I can't inject into installd, thus no AppSync, thus no app installation for now, including iSuperSU
 - Tweaks pre-patched for rootlessJB 1.0 and 2.0 will not work. Use new patcher script. (ldid was replaced with ldid2!)
+
+# iOS 12 - UPDATE
+- Added a modified dpkg (https://github.com/limneos/dpkg/) that automatically handles patching, moving, entitling, trusting ,app-installation and daemon injection for debs
+- Added recompiled dropbear v2018.76 customized for rootlessJB with fixed shell (still accepts --shell) , additional --path option to set ssh-exported path, correct scp paths and motd. 
+- Added recompiled ldid2, plutil, bintools (nm,strings,diff)
+- Added tweaks check on re-jailbreaking to re-enable apps and daemons
+
+## Deb files
+- Some packages are taken from CoolStar' Electra repo
+
 
 patcher usage:
 ./patcher /path/to/deb /path/to/output_folder
